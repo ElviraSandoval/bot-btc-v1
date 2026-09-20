@@ -1,71 +1,94 @@
 import yfinance as yf
 import pandas as pd
 import ta
-import time
 import requests
+import time
 from datetime import datetime
 import pytz
 
-TOKEN = "8884146603:AAFitFKTVz-UChiQYec6XKUn1jTSgelwr5Q"
-CHAT_ID = "6560153830"
-ACTIVO = "BTC-USD"
-NOMBRE_TG = "Bitcoin (Binary) - IQ Option REAL"
+# --- CONFIG ---
+TOKEN = "8322501362:AAHiCcYtA4g7bik2w3p2i2aR7U2v3sS9l8M" # Tu token, no lo cambies
+CHAT_ID = "7853364550"
+SYMBOL = "BTC-USD"
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except Exception as e:
-        print(f"Error telegram: {e}")
+        requests.post(url, data=data, timeout=10)
+    except:
+        pass
+
+def get_data(interval):
+    df = yf.download(SYMBOL, period="2d", interval=interval, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df.dropna()
 
 def analizar():
-    try:
-        df = yf.download(ACTIVO, period="1d", interval="1m", progress=False, auto_adjust=True)
-        if len(df) < 100: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        close = df['Close'].squeeze()
-        high = df['High'].squeeze()
-        low = df['Low'].squeeze()
-        df['RSI'] = ta.momentum.RSIIndicator(close, window=14).rsi()
-        df['ADX'] = ta.trend.ADXIndicator(high, low, close, window=14).adx()
-        df['EMA9'] = ta.trend.EMAIndicator(close, window=9).ema_indicator()
-        df['EMA21'] = ta.trend.EMAIndicator(close, window=21).ema_indicator()
-        last = df.iloc[-1]
-        rsi = float(last['RSI'])
-        adx = float(last['ADX'])
-        rango = float(df['High'].tail(20).max() - df['Low'].tail(20).min())
-        if rango / float(last['Close']) * 100 < 0.12: return None
-        if adx < 20: return None
-        if 45 < rsi < 55: return None
-        direccion = ""
-        score = 0
-        if last['EMA9'] > last['EMA21'] and 55 < rsi < 72:
+    # Revisión de 1 min y 3 min como el de oro
+    df1 = get_data("1m")
+    df3 = get_data("3m")
+    
+    if len(df1) < 100 or len(df3) < 100:
+        return None
+
+    for df in [df1, df3]:
+        df['RSI'] = ta.momentum.RSIIndicator(df['Close'], 14).rsi()
+        df['EMA9'] = ta.trend.EMAIndicator(df['Close'], 9).ema_indicator()
+        df['EMA21'] = ta.trend.EMAIndicator(df['Close'], 21).ema_indicator()
+        adx = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'], 14)
+        df['ADX'] = adx.adx()
+        df['DI+'] = adx.adx_pos()
+        df['DI-'] = adx.adx_neg()
+
+    c1 = df1.iloc[-1]
+    c3 = df3.iloc[-1]
+    
+    prob = 0
+    direccion = None
+
+    # LOGICA DUPLICADA DEL ORO - COMPRA
+    if c1['RSI'] > 50 and c1['EMA9'] > c1['EMA21'] and c1['DI+'] > c1['DI-'] and c1['ADX'] > 20:
+        if c3['EMA9'] > c3['EMA21'] and c3['RSI'] > 50:
             direccion = "COMPRA 🟢 (CALL)"
-            score = 3
-        elif last['EMA9'] < last['EMA21'] and 28 < rsi < 45:
+            prob = 78 + (c1['ADX'] - 20)
+
+    # LOGICA DUPLICADA DEL ORO - VENTA
+    if c1['RSI'] < 50 and c1['EMA9'] < c1['EMA21'] and c1['DI-'] > c1['DI+'] and c1['ADX'] > 20:
+        if c3['EMA9'] < c3['EMA21'] and c3['RSI'] < 50:
             direccion = "VENTA 🔴 (PUT)"
-            score = 3
-        else:
-            return None
-        if adx > 25: score += 2
-        if adx > 30: score += 1
-        if score >= 4:
-            prob = 65 + (score * 6)
-            if prob > 92: prob = 92
-            hora_mx = datetime.now(pytz.timezone('America/Mexico_City')).strftime('%H:%M:%S')
-            msg = f"📈 *SEÑAL BITCOIN V1*\n💰 Activo: {NOMBRE_TG}\n⏰ Hora MX: {hora_mx}\n📊 Dirección: {direccion}\n🎯 Probabilidad: {prob}%\n📈 RSI: {round(rsi,1)} | ADX: {round(adx,1)}\n⏱️ Expiración: 2 minutos"
-            send_telegram(msg)
-            return True
-    except Exception as e:
-        print(f"Error: {e}")
+            prob = 78 + (c1['ADX'] - 20)
+
+    if direccion and prob >= 75:
+        if prob > 92: prob = 92
+        tz = pytz.timezone('America/Mexico_City')
+        hora_mx = datetime.now(tz).strftime("%H:%M:%S")
+        
+        mensaje = f"""📈 *SEÑAL BITCOIN V1 - DUPLICADO ORO*
+💰 *Activo:* Bitcoin - IQ Option REAL
+⏰ *Hora MX:* {hora_mx}
+📊 *Dirección:* {direccion}
+🎯 *Probabilidad:* {int(prob)}%
+📈 *RSI:* {c1['RSI']:.1f} | *ADX:* {c1['ADX']:.1f}
+⏱️ *Expiración:* 5 minutos
+*Revisión: 1m y 3m*"""
+        return mensaje
     return None
 
-print("BOT BITCOIN V1 INICIADO")
-send_telegram("🤖 *BOT BITCOIN V1 CONECTADO* 24/7 Activo. Ya estoy analizando BTC para IQ Option.")
+# --- INICIO ---
+send_telegram("🤖 *BOT BITCOIN V1 CONECTADO*\nDuplicado del ORO - 5 Min - BTC REAL")
+print("BOT BITCOIN V1 INICIADO - 5 MIN")
+
+ultima_senal = ""
 while True:
     try:
-        analizar()
+        senal = analizar()
+        if senal and senal != ultima_senal:
+            send_telegram(senal)
+            ultima_senal = senal
+            time.sleep(300) # 5 min cooldown como el de oro
         time.sleep(60)
-    except:
+    except Exception as e:
+        print(f"Error: {e}")
         time.sleep(60)
